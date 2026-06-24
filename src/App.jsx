@@ -57,6 +57,7 @@ const ICONS = {
   bell: "M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0",
   adjust: "M12 20v-6M12 14l-3 3M12 14l3 3M12 4v6M12 10l-3-3M12 10l3-3M4 12h4M16 12h4",
   inbound: "M21 12V7a2 2 0 00-2-2H5a2 2 0 00-2 2v5m18 0v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5m18 0H3m9-7v7m0 0l-3-3m3 3l3-3",
+  barChart: "M3 3v18h18M7 16v-5M12 16V8M17 16v-3",
 };
 
 /* ===================== ROOT APP ===================== */
@@ -250,6 +251,7 @@ function MainApp({ data, patch, addAudit, me, session, setSession, showToast, to
 
   const ADMIN_TABS = [
     { id: "dashboard", label: "Dashboard", icon: ICONS.dashboard },
+    { id: "reports", label: "Reports", icon: ICONS.barChart },
     { id: "sell", label: "Sell", icon: ICONS.sell },
     { id: "products", label: "Inventory", icon: ICONS.box },
     { id: "stockAdj", label: "Stock Adjustments", icon: ICONS.adjust },
@@ -280,6 +282,7 @@ function MainApp({ data, patch, addAudit, me, session, setSession, showToast, to
           ) : (
             <>
               {tab === "dashboard" && isAdmin && <Dashboard data={data} />}
+              {tab === "reports" && isAdmin && <ReportsScreen data={data} />}
               {tab === "sell" && <SellScreen data={data} patch={patch} addAudit={addAudit} me={me} activeShift={activeShift} showToast={showToast} isAdmin={isAdmin} />}
               {tab === "products" && isAdmin && <ProductsScreen data={data} patch={patch} addAudit={addAudit} me={me} showToast={showToast} />}
               {tab === "stockAdj" && isAdmin && <StockAdjustmentsScreen data={data} patch={patch} addAudit={addAudit} me={me} showToast={showToast} />}
@@ -896,12 +899,15 @@ function SellScreen({ data, patch, addAudit, me, activeShift, showToast, isAdmin
         if (existing.qty + 1 > p.stock) { showToast(`Only ${p.stock} of ${p.name} in stock.`, "warn"); return c; }
         return c.map((x) => (x.productId === p.id ? { ...x, qty: x.qty + 1 } : x));
       }
-      return [...c, { productId: p.id, name: p.name, qty: 1, price: priceOverride[p.id] ?? p.salePrice, cost: p.cost, minSale: p.minSale, priceMode: p.priceMode, maxStock: p.stock }];
+      return [...c, { productId: p.id, name: p.name, qty: 1, price: priceOverride[p.id] ?? p.salePrice, cost: p.cost, minSale: p.minSale, priceMode: p.priceMode, maxStock: p.stock, serial: "" }];
     });
   };
 
   const updateQty = (id, qty) => {
     setCart((c) => c.map((x) => (x.productId === id ? { ...x, qty: Math.max(1, Math.min(qty, x.maxStock)) } : x)));
+  };
+  const updateSerial = (id, serial) => {
+    setCart((c) => c.map((x) => (x.productId === id ? { ...x, serial } : x)));
   };
   const updatePrice = (id, price) => {
     setCart((c) => c.map((x) => {
@@ -928,10 +934,10 @@ function SellScreen({ data, patch, addAudit, me, activeShift, showToast, isAdmin
       at: nowISO(),
       cashierId: me.id,
       cashierName: me.name,
-      items: cart.map((x) => ({ productId: x.productId, name: x.name, qty: x.qty, price: x.price, cost: x.cost })),
+      items: cart.map((x) => ({ productId: x.productId, name: x.name, qty: x.qty, price: x.price, cost: x.cost, serial: (x.serial || "").trim() })),
       total,
       paymentMethod,
-      customerName: paymentMethod === "credit" ? customerName.trim() : "",
+      customerName: customerName.trim(),
       reversed: false,
     };
 
@@ -997,6 +1003,13 @@ function SellScreen({ data, patch, addAudit, me, activeShift, showToast, isAdmin
                 <span style={{ marginLeft: "auto", fontFamily: F.mono, fontWeight: 700, fontSize: 13.5 }}>{fmt(x.qty * x.price)}</span>
               </div>
               {x.priceMode === "negotiable" && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 3 }}>Min: {fmt(x.minSale)}</div>}
+              <input
+                className="focus-ring"
+                value={x.serial}
+                onChange={(e) => updateSerial(x.productId, e.target.value)}
+                style={{ ...inp, marginTop: 6, padding: "6px 8px", fontFamily: F.mono, fontSize: 12 }}
+                placeholder="Serial / IMEI number (optional)"
+              />
             </div>
           ))}
         </div>
@@ -1014,12 +1027,10 @@ function SellScreen({ data, patch, addAudit, me, activeShift, showToast, isAdmin
           <option value="credit">On credit (pay later)</option>
         </select>
 
-        {paymentMethod === "credit" && (
-          <div style={{ marginTop: 10 }}>
-            <label style={lbl}>Customer name</label>
-            <input className="focus-ring" value={customerName} onChange={(e) => setCustomerName(e.target.value)} style={inp} placeholder="Who is this credit for?" />
-          </div>
-        )}
+        <div style={{ marginTop: 10 }}>
+          <label style={lbl}>Customer name {paymentMethod === "credit" ? "(required for credit)" : "(optional)"}</label>
+          <input className="focus-ring" value={customerName} onChange={(e) => setCustomerName(e.target.value)} style={inp} placeholder="Who is this sale for?" />
+        </div>
 
         <button onClick={completeSale} style={{ ...btnPrimary, width: "100%", marginTop: 16, padding: "13px 0", fontSize: 15 }}>Complete sale · {fmt(total)}</button>
       </div>
@@ -1060,7 +1071,10 @@ function ReceiptModal({ sale, settings, onClose }) {
         <table>
           {sale.items.map((it, i) => (
             <tr key={i}>
-              <td>{it.qty}× {it.name}</td>
+              <td>
+                {it.qty}× {it.name}
+                {it.serial && <div style={{ fontSize: 10.5, color: "#666", marginLeft: 2 }}>S/N: {it.serial}</div>}
+              </td>
               <td className="right">{fmt(it.qty * it.price)}</td>
             </tr>
           ))}
@@ -1089,7 +1103,7 @@ function SalesHistoryScreen({ data, patch, addAudit, me, isAdmin, showToast }) {
   const [reason, setReason] = useState("");
 
   const visible = (isAdmin ? data.sales : data.sales.filter((s) => s.cashierId === me.id))
-    .filter((s) => s.receiptNo.toLowerCase().includes(q.toLowerCase()) || s.cashierName.toLowerCase().includes(q.toLowerCase()) || (s.customerName || "").toLowerCase().includes(q.toLowerCase()));
+    .filter((s) => s.receiptNo.toLowerCase().includes(q.toLowerCase()) || s.cashierName.toLowerCase().includes(q.toLowerCase()) || (s.customerName || "").toLowerCase().includes(q.toLowerCase()) || s.items.some((it) => (it.serial || "").toLowerCase().includes(q.toLowerCase())));
 
   const doReverse = () => {
     const s = reverseTarget;
@@ -1108,7 +1122,7 @@ function SalesHistoryScreen({ data, patch, addAudit, me, isAdmin, showToast }) {
     <div>
       <SectionHeader title={isAdmin ? "Sales history" : "My sales"} subtitle={`${visible.length} transaction(s)`} />
       <div style={{ marginBottom: 14, maxWidth: 320 }}>
-        <input className="focus-ring" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by receipt, cashier, customer…" style={inp} />
+        <input className="focus-ring" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by receipt, cashier, customer, serial number…" style={inp} />
       </div>
       <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden" }}>
         <Table
@@ -1117,7 +1131,7 @@ function SalesHistoryScreen({ data, patch, addAudit, me, isAdmin, showToast }) {
             s.receiptNo,
             niceTime(s.at),
             isAdmin ? s.cashierName : null,
-            `${s.items.length} item(s)`,
+            <span>{s.items.length} item(s){s.items.some((it) => it.serial) && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>{s.items.filter((it) => it.serial).map((it) => it.serial).join(", ")}</div>}</span>,
             fmt(s.total),
             methodLabel(s.paymentMethod),
             s.reversed ? <Badge color={C.danger}>Reversed</Badge> : <Badge color={C.ok}>Completed</Badge>,
@@ -1490,6 +1504,554 @@ function AuditScreen({ data }) {
           head={["When", "Who", "Action", "Detail"]}
           rows={data.auditLog.map((a) => [niceTime(a.at), nameFor(a.actorId), <Badge color={a.action.includes("REVERSE") || a.action.includes("DELETE") ? C.danger : C.green}>{a.action.replace(/_/g, " ")}</Badge>, a.detail])}
           emptyText="No activity logged yet."
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ===================== REPORTS ===================== */
+const REPORT_SUBTABS = [
+  { id: "overview", label: "Overview" },
+  { id: "sales", label: "Daily / Weekly / Monthly / Annual" },
+  { id: "comparison", label: "Comparison" },
+  { id: "salesList", label: "Sales List" },
+  { id: "suppliers", label: "Supplier Payments" },
+  { id: "stockValuation", label: "Stock Valuation" },
+  { id: "cashFlow", label: "Cash Flow" },
+];
+
+function ReportsScreen({ data }) {
+  const [sub, setSub] = useState("overview");
+  return (
+    <div>
+      <SectionHeader title="Reports" subtitle="Sales trends, supplier activity, stock value and cash flow, all in one place" />
+      <div style={{ display: "flex", gap: 6, marginBottom: 20, borderBottom: `1px solid ${C.line}`, overflowX: "auto" }}>
+        {REPORT_SUBTABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setSub(t.id)}
+            className="focus-ring"
+            style={{
+              padding: "10px 14px", border: "none", background: "none", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap",
+              color: sub === t.id ? C.green : C.muted,
+              borderBottom: sub === t.id ? `2px solid ${C.green}` : "2px solid transparent",
+              marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {sub === "overview" && <ReportOverview data={data} />}
+      {sub === "sales" && <ReportSalesPeriods data={data} />}
+      {sub === "comparison" && <ReportComparison data={data} />}
+      {sub === "salesList" && <ReportSalesList data={data} />}
+      {sub === "suppliers" && <ReportSupplierPayments data={data} />}
+      {sub === "stockValuation" && <ReportStockValuation data={data} />}
+      {sub === "cashFlow" && <ReportCashFlow data={data} />}
+    </div>
+  );
+}
+
+/* ---------- shared report helpers ---------- */
+function rangeKey(d) { return todayStr(new Date(d)); }
+function saleProfit(s) {
+  const cost = (s.items || []).reduce((a, i) => a + (Number(i.cost) || 0) * (Number(i.qty) || 0), 0);
+  return s.total - cost;
+}
+function saleCost(s) {
+  return (s.items || []).reduce((a, i) => a + (Number(i.cost) || 0) * (Number(i.qty) || 0), 0);
+}
+function startOfWeek(d) {
+  const x = new Date(d);
+  const day = x.getDay(); // 0 = Sunday
+  const diff = (day === 0 ? -6 : 1) - day; // Monday-start week
+  x.setDate(x.getDate() + diff);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function inRange(at, from, to) {
+  const t = new Date(at).getTime();
+  return t >= from.getTime() && t <= to.getTime();
+}
+function endOfDay(d) { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; }
+function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+
+function summarize(sales, expenses, from, to) {
+  const inSales = sales.filter((s) => !s.reversed && inRange(s.at, from, to));
+  const inExp = expenses.filter((e) => inRange(e.at, from, to));
+  const revenue = inSales.reduce((a, s) => a + s.total, 0);
+  const cost = inSales.reduce((a, s) => a + saleCost(s), 0);
+  const expenseTotal = inExp.reduce((a, e) => a + e.amount, 0);
+  const grossProfit = revenue - cost;
+  const netProfit = grossProfit - expenseTotal;
+  return { count: inSales.length, revenue, cost, expenseTotal, grossProfit, netProfit, sales: inSales };
+}
+
+/* ---------- 1. OVERVIEW ---------- */
+function ReportOverview({ data }) {
+  const now = new Date();
+  const today = summarize(data.sales, data.expenses, startOfDay(now), endOfDay(now));
+  const weekFrom = startOfWeek(now);
+  const week = summarize(data.sales, data.expenses, weekFrom, endOfDay(now));
+  const monthFrom = new Date(now.getFullYear(), now.getMonth(), 1);
+  const month = summarize(data.sales, data.expenses, monthFrom, endOfDay(now));
+  const yearFrom = new Date(now.getFullYear(), 0, 1);
+  const year = summarize(data.sales, data.expenses, yearFrom, endOfDay(now));
+
+  const lowStock = data.products.filter((p) => p.stock <= (data.settings.lowStockThreshold ?? 5));
+  const supplierDebt = data.suppliers.reduce((a, s) => a + (s.balance || 0), 0);
+  const stockCostValue = data.products.reduce((a, p) => a + p.cost * p.stock, 0);
+  const stockSaleValue = data.products.reduce((a, p) => a + p.salePrice * p.stock, 0);
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 20 }}>
+        <OverviewCard label="Today" rev={today.revenue} profit={today.netProfit} count={today.count} />
+        <OverviewCard label="This week" rev={week.revenue} profit={week.netProfit} count={week.count} />
+        <OverviewCard label="This month" rev={month.revenue} profit={month.netProfit} count={month.count} />
+        <OverviewCard label="This year" rev={year.revenue} profit={year.netProfit} count={year.count} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+        <Card title="Stock value">
+          <Row left="At cost" right={fmt(stockCostValue)} />
+          <Row left="At sale price" right={fmt(stockSaleValue)} />
+          <Row left="Potential markup" right={fmt(stockSaleValue - stockCostValue)} bold />
+        </Card>
+        <Card title="Suppliers" accent={supplierDebt > 0 ? C.terracotta : C.ok}>
+          <Row left="Total owed" right={fmt(supplierDebt)} bold />
+          <Row left="Suppliers with balance" right={String(data.suppliers.filter((s) => (s.balance || 0) > 0).length)} />
+        </Card>
+        <Card title="Inventory alerts" accent={lowStock.length ? C.terracotta : C.ok}>
+          {lowStock.length === 0 ? <Empty text="No low-stock items." good /> : lowStock.slice(0, 5).map((p) => <Row key={p.id} left={p.name} right={`${p.stock} left`} small />)}
+        </Card>
+      </div>
+    </div>
+  );
+}
+function OverviewCard({ label, rev, profit, count }) {
+  return (
+    <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 12, padding: "16px 18px" }}>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontWeight: 600 }}>{label}</div>
+      <div style={{ fontFamily: F.mono, fontSize: 19, fontWeight: 700, color: C.charcoal }}>{fmt(rev)}</div>
+      <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>{count} sale(s)</div>
+      <div style={{ fontSize: 12.5, color: profit >= 0 ? C.ok : C.danger, marginTop: 6, fontWeight: 600 }}>{profit >= 0 ? "+" : ""}{fmt(profit)} profit</div>
+    </div>
+  );
+}
+
+/* ---------- 2. DAILY / WEEKLY / MONTHLY / ANNUAL ---------- */
+function ReportSalesPeriods({ data }) {
+  const [period, setPeriod] = useState("daily");
+  const buckets = useMemo(() => buildBuckets(data.sales, data.expenses, period), [data.sales, data.expenses, period]);
+  const maxRev = Math.max(...buckets.map((b) => b.revenue), 1);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+        {[["daily", "Daily (last 14 days)"], ["weekly", "Weekly (last 8 weeks)"], ["monthly", "Monthly (last 12 months)"], ["annually", "Annually (last 5 years)"]].map(([id, label]) => (
+          <button key={id} onClick={() => setPeriod(id)} style={period === id ? { ...btnPrimary, padding: "8px 14px", fontSize: 12.5 } : { ...btnGhost, padding: "8px 14px", fontSize: 12.5 }}>{label}</button>
+        ))}
+      </div>
+
+      <Card title="Revenue trend">
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 160, padding: "10px 4px", overflowX: "auto" }}>
+          {buckets.map((b, i) => (
+            <div key={i} style={{ flex: "0 0 auto", minWidth: 30, display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+              <div style={{ width: 26, height: Math.max(4, (b.revenue / maxRev) * 120), background: i === buckets.length - 1 ? C.green : C.gold, borderRadius: "4px 4px 0 0" }} title={fmt(b.revenue)} />
+              <div style={{ fontSize: 10.5, color: C.muted, whiteSpace: "nowrap" }}>{b.label}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <div style={{ height: 16 }} />
+
+      <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden" }}>
+        <Table
+          head={["Period", "Sales count", "Revenue", "Cost", "Gross profit", "Expenses", "Net profit"]}
+          rows={[...buckets].reverse().map((b) => [
+            b.label, String(b.count), fmt(b.revenue), fmt(b.cost), fmt(b.revenue - b.cost),
+            fmt(b.expenseTotal), <span style={{ color: b.netProfit >= 0 ? C.ok : C.danger, fontWeight: 700 }}>{fmt(b.netProfit)}</span>,
+          ])}
+          emptyText="No data for this period."
+        />
+      </div>
+    </div>
+  );
+}
+function buildBuckets(sales, expenses, period) {
+  const now = new Date();
+  const out = [];
+  if (period === "daily") {
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const from = startOfDay(d), to = endOfDay(d);
+      const s = summarize(sales, expenses, from, to);
+      out.push({ label: d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" }), ...s });
+    }
+  } else if (period === "weekly") {
+    for (let i = 7; i >= 0; i--) {
+      const ref = new Date(); ref.setDate(ref.getDate() - i * 7);
+      const from = startOfWeek(ref); const to = endOfDay(new Date(from.getTime() + 6 * 86400000));
+      const s = summarize(sales, expenses, from, to);
+      out.push({ label: `Wk of ${from.toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}`, ...s });
+    }
+  } else if (period === "monthly") {
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const from = d; const to = endOfDay(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+      const s = summarize(sales, expenses, from, to);
+      out.push({ label: d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" }), ...s });
+    }
+  } else {
+    for (let i = 4; i >= 0; i--) {
+      const y = now.getFullYear() - i;
+      const from = new Date(y, 0, 1); const to = endOfDay(new Date(y, 11, 31));
+      const s = summarize(sales, expenses, from, to);
+      out.push({ label: String(y), ...s });
+    }
+  }
+  return out;
+}
+
+/* ---------- 3. COMPARISON ---------- */
+const COMPARISON_PRESETS = [
+  { id: "week", label: "This week vs last week" },
+  { id: "month", label: "This month vs last month" },
+  { id: "year", label: "This year vs last year" },
+  { id: "custom", label: "Custom date ranges" },
+  { id: "cashier", label: "Cashier vs cashier" },
+];
+
+function ReportComparison({ data }) {
+  const [mode, setMode] = useState("week");
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+        {COMPARISON_PRESETS.map((p) => (
+          <button key={p.id} onClick={() => setMode(p.id)} style={mode === p.id ? { ...btnPrimary, padding: "8px 14px", fontSize: 12.5 } : { ...btnGhost, padding: "8px 14px", fontSize: 12.5 }}>{p.label}</button>
+        ))}
+      </div>
+      {mode === "week" && <PeriodComparison {...periodPair("week")} data={data} />}
+      {mode === "month" && <PeriodComparison {...periodPair("month")} data={data} />}
+      {mode === "year" && <PeriodComparison {...periodPair("year")} data={data} />}
+      {mode === "custom" && <CustomComparison data={data} />}
+      {mode === "cashier" && <CashierComparison data={data} />}
+    </div>
+  );
+}
+function periodPair(unit) {
+  const now = new Date();
+  if (unit === "week") {
+    const curFrom = startOfWeek(now); const curTo = endOfDay(now);
+    const prevFrom = new Date(curFrom.getTime() - 7 * 86400000); const prevTo = endOfDay(new Date(curFrom.getTime() - 1));
+    return { curFrom, curTo, prevFrom, prevTo, curLabel: "This week", prevLabel: "Last week" };
+  }
+  if (unit === "month") {
+    const curFrom = new Date(now.getFullYear(), now.getMonth(), 1); const curTo = endOfDay(now);
+    const prevFrom = new Date(now.getFullYear(), now.getMonth() - 1, 1); const prevTo = endOfDay(new Date(now.getFullYear(), now.getMonth(), 0));
+    return { curFrom, curTo, prevFrom, prevTo, curLabel: "This month", prevLabel: "Last month" };
+  }
+  const curFrom = new Date(now.getFullYear(), 0, 1); const curTo = endOfDay(now);
+  const prevFrom = new Date(now.getFullYear() - 1, 0, 1); const prevTo = endOfDay(new Date(now.getFullYear() - 1, 11, 31));
+  return { curFrom, curTo, prevFrom, prevTo, curLabel: "This year", prevLabel: "Last year" };
+}
+function PeriodComparison({ data, curFrom, curTo, prevFrom, prevTo, curLabel, prevLabel }) {
+  const cur = summarize(data.sales, data.expenses, curFrom, curTo);
+  const prev = summarize(data.sales, data.expenses, prevFrom, prevTo);
+  return <ComparisonTable curLabel={curLabel} prevLabel={prevLabel} cur={cur} prev={prev} />;
+}
+function CustomComparison({ data }) {
+  const today = todayStr();
+  const [aFrom, setAFrom] = useState(today);
+  const [aTo, setATo] = useState(today);
+  const [bFrom, setBFrom] = useState(today);
+  const [bTo, setBTo] = useState(today);
+  const cur = summarize(data.sales, data.expenses, startOfDay(new Date(aFrom)), endOfDay(new Date(aTo)));
+  const prev = summarize(data.sales, data.expenses, startOfDay(new Date(bFrom)), endOfDay(new Date(bTo)));
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 18 }}>
+        <Card title="Range A">
+          <label style={lbl}>From</label>
+          <input className="focus-ring" type="date" value={aFrom} onChange={(e) => setAFrom(e.target.value)} style={inp} />
+          <label style={lbl}>To</label>
+          <input className="focus-ring" type="date" value={aTo} onChange={(e) => setATo(e.target.value)} style={inp} />
+        </Card>
+        <Card title="Range B">
+          <label style={lbl}>From</label>
+          <input className="focus-ring" type="date" value={bFrom} onChange={(e) => setBFrom(e.target.value)} style={inp} />
+          <label style={lbl}>To</label>
+          <input className="focus-ring" type="date" value={bTo} onChange={(e) => setBTo(e.target.value)} style={inp} />
+        </Card>
+      </div>
+      <ComparisonTable curLabel="Range A" prevLabel="Range B" cur={cur} prev={prev} />
+    </div>
+  );
+}
+function CashierComparison({ data }) {
+  const cashiers = data.users.filter((u) => u.role === "cashier" || u.role === "admin");
+  const [aId, setAId] = useState(cashiers[0]?.id || "");
+  const [bId, setBId] = useState(cashiers[1]?.id || cashiers[0]?.id || "");
+  const totalsFor = (id) => {
+    const own = data.sales.filter((s) => s.cashierId === id && !s.reversed);
+    const revenue = own.reduce((a, s) => a + s.total, 0);
+    const cost = own.reduce((a, s) => a + saleCost(s), 0);
+    return { count: own.length, revenue, cost, expenseTotal: 0, grossProfit: revenue - cost, netProfit: revenue - cost, sales: own };
+  };
+  const a = totalsFor(aId), b = totalsFor(bId);
+  const nameFor = (id) => data.users.find((u) => u.id === id)?.name || "—";
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 18 }}>
+        <div>
+          <label style={lbl}>Cashier A</label>
+          <select className="focus-ring" value={aId} onChange={(e) => setAId(e.target.value)} style={inp}>
+            {cashiers.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={lbl}>Cashier B</label>
+          <select className="focus-ring" value={bId} onChange={(e) => setBId(e.target.value)} style={inp}>
+            {cashiers.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+      </div>
+      <ComparisonTable curLabel={nameFor(aId)} prevLabel={nameFor(bId)} cur={a} prev={b} />
+    </div>
+  );
+}
+function ComparisonTable({ curLabel, prevLabel, cur, prev }) {
+  const pctChange = (c, p) => (p === 0 ? (c === 0 ? 0 : 100) : ((c - p) / Math.abs(p)) * 100);
+  const rows = [
+    ["Sales count", String(cur.count), String(prev.count), pctChange(cur.count, prev.count)],
+    ["Revenue", fmt(cur.revenue), fmt(prev.revenue), pctChange(cur.revenue, prev.revenue)],
+    ["Cost of goods", fmt(cur.cost), fmt(prev.cost), pctChange(cur.cost, prev.cost)],
+    ["Gross profit", fmt(cur.grossProfit), fmt(prev.grossProfit), pctChange(cur.grossProfit, prev.grossProfit)],
+    ["Expenses", fmt(cur.expenseTotal), fmt(prev.expenseTotal), pctChange(cur.expenseTotal, prev.expenseTotal)],
+    ["Net profit", fmt(cur.netProfit), fmt(prev.netProfit), pctChange(cur.netProfit, prev.netProfit)],
+  ];
+  return (
+    <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden" }}>
+      <Table
+        head={["Metric", curLabel, prevLabel, "Change"]}
+        rows={rows.map(([label, c, p, pct]) => [
+          label, c, p,
+          <span style={{ fontWeight: 700, color: pct > 0 ? C.ok : pct < 0 ? C.danger : C.muted }}>{pct > 0 ? "▲" : pct < 0 ? "▼" : "—"} {Math.abs(pct).toFixed(1)}%</span>,
+        ])}
+        emptyText="No data."
+      />
+    </div>
+  );
+}
+
+/* ---------- 4. SALES LIST ---------- */
+function ReportSalesList({ data }) {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [cashierId, setCashierId] = useState("all");
+  const [method, setMethod] = useState("all");
+  const [q, setQ] = useState("");
+
+  const filtered = data.sales.filter((s) => {
+    if (from && new Date(s.at) < startOfDay(new Date(from))) return false;
+    if (to && new Date(s.at) > endOfDay(new Date(to))) return false;
+    if (cashierId !== "all" && s.cashierId !== cashierId) return false;
+    if (method !== "all" && s.paymentMethod !== method) return false;
+    if (q.trim() && !(s.receiptNo.toLowerCase().includes(q.toLowerCase()) || (s.customerName || "").toLowerCase().includes(q.toLowerCase()) || s.items.some((it) => (it.serial || "").toLowerCase().includes(q.toLowerCase())))) return false;
+    return true;
+  });
+  const totalRevenue = filtered.filter((s) => !s.reversed).reduce((a, s) => a + s.total, 0);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <div><label style={lbl}>From</label><input className="focus-ring" type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={{ ...inp, width: 150 }} /></div>
+        <div><label style={lbl}>To</label><input className="focus-ring" type="date" value={to} onChange={(e) => setTo(e.target.value)} style={{ ...inp, width: 150 }} /></div>
+        <div>
+          <label style={lbl}>Cashier</label>
+          <select className="focus-ring" value={cashierId} onChange={(e) => setCashierId(e.target.value)} style={{ ...inp, width: 160 }}>
+            <option value="all">All cashiers</option>
+            {data.users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={lbl}>Payment</label>
+          <select className="focus-ring" value={method} onChange={(e) => setMethod(e.target.value)} style={{ ...inp, width: 150 }}>
+            <option value="all">All methods</option>
+            <option value="cash">Cash</option>
+            <option value="momo1">MTN MoMo</option>
+            <option value="momo2">Airtel Money</option>
+            <option value="card">Card</option>
+            <option value="credit">On credit</option>
+          </select>
+        </div>
+        <div style={{ flex: 1, minWidth: 160 }}><label style={lbl}>Search</label><input className="focus-ring" value={q} onChange={(e) => setQ(e.target.value)} style={inp} placeholder="Receipt, customer, or serial number…" /></div>
+      </div>
+
+      <SectionHeader title="" subtitle={`${filtered.length} transaction(s) · total revenue ${fmt(totalRevenue)}`} />
+
+      <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden" }}>
+        <Table
+          head={["Receipt", "Time", "Cashier", "Customer", "Items", "Total", "Payment", "Status"]}
+          rows={filtered.map((s) => [
+            s.receiptNo, niceTime(s.at), s.cashierName, s.customerName || "—",
+            <span>{s.items.length} item(s){s.items.some((it) => it.serial) && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>{s.items.filter((it) => it.serial).map((it) => it.serial).join(", ")}</div>}</span>,
+            fmt(s.total), methodLabel(s.paymentMethod),
+            s.reversed ? <Badge color={C.danger}>Reversed</Badge> : <Badge color={C.ok}>Completed</Badge>,
+          ])}
+          emptyText="No sales match these filters."
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 5. SUPPLIER PAYMENT CHANGES ---------- */
+function ReportSupplierPayments({ data }) {
+  const [supplierId, setSupplierId] = useState("all");
+  const sorted = [...data.supplierTx].sort((a, b) => new Date(b.at) - new Date(a.at))
+    .filter((t) => supplierId === "all" || t.supplierId === supplierId);
+  const nameFor = (id) => data.suppliers.find((s) => s.id === id)?.name || "Unknown supplier";
+
+  const totalPaid = sorted.filter((t) => t.type === "payment_made").reduce((a, t) => a + t.amount, 0);
+  const totalCredit = sorted.filter((t) => t.type === "credit_received").reduce((a, t) => a + t.amount, 0);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 14, maxWidth: 280 }}>
+        <label style={lbl}>Supplier</label>
+        <select className="focus-ring" value={supplierId} onChange={(e) => setSupplierId(e.target.value)} style={inp}>
+          <option value="all">All suppliers</option>
+          {data.suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 18 }}>
+        <StatCard label="Total paid out" value={fmt(totalPaid)} color={C.ok} />
+        <StatCard label="Total credit received" value={fmt(totalCredit)} color={C.terracotta} />
+        <StatCard label="Current total owed" value={fmt(data.suppliers.reduce((a, s) => a + (supplierId === "all" || s.id === supplierId ? (s.balance || 0) : 0), 0))} color={C.charcoal} emphasis />
+      </div>
+
+      <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden" }}>
+        <Table
+          head={["Date", "Supplier", "Type", "Amount", "Note"]}
+          rows={sorted.map((t) => [
+            niceTime(t.at), nameFor(t.supplierId),
+            <Badge color={t.type === "payment_made" ? C.ok : C.terracotta}>{t.type === "payment_made" ? "Payment made" : "Credit received"}</Badge>,
+            fmt(t.amount), t.note || "—",
+          ])}
+          emptyText="No supplier transactions recorded yet."
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 6. STOCK VALUATION ---------- */
+function ReportStockValuation({ data }) {
+  const [q, setQ] = useState("");
+  const filtered = data.products.filter((p) => p.name.toLowerCase().includes(q.toLowerCase()) || (p.category || "").toLowerCase().includes(q.toLowerCase()));
+  const totalCost = filtered.reduce((a, p) => a + p.cost * p.stock, 0);
+  const totalSale = filtered.reduce((a, p) => a + p.salePrice * p.stock, 0);
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 18 }}>
+        <StatCard label="Total stock value (cost)" value={fmt(totalCost)} color={C.muted} />
+        <StatCard label="Total stock value (sale price)" value={fmt(totalSale)} color={C.green} />
+        <StatCard label="Potential markup" value={fmt(totalSale - totalCost)} color={C.ok} emphasis />
+      </div>
+
+      <div style={{ marginBottom: 14, maxWidth: 320 }}>
+        <input className="focus-ring" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name or category…" style={inp} />
+      </div>
+
+      <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden" }}>
+        <Table
+          head={["Product", "Category", "Stock", "Unit cost", "Unit sale price", "Value at cost", "Value at sale price"]}
+          rows={filtered.map((p) => [
+            p.name, p.category || "—", String(p.stock), fmt(p.cost), fmt(p.salePrice), fmt(p.cost * p.stock), fmt(p.salePrice * p.stock),
+          ])}
+          emptyText="No products match."
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 7. CASH FLOW ANALYSIS ---------- */
+function ReportCashFlow({ data }) {
+  const [days, setDays] = useState(14);
+  const rows = useMemo(() => {
+    const out = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const from = startOfDay(d), to = endOfDay(d);
+      const daySales = data.sales.filter((s) => !s.reversed && inRange(s.at, from, to));
+      const cashIn = {};
+      daySales.forEach((s) => { cashIn[s.paymentMethod] = (cashIn[s.paymentMethod] || 0) + s.total; });
+      const totalIn = daySales.reduce((a, s) => a + s.total, 0);
+
+      const dayExpenses = data.expenses.filter((e) => inRange(e.at, from, to)).reduce((a, e) => a + e.amount, 0);
+      const dayPayments = data.supplierTx.filter((t) => t.type === "payment_made" && inRange(t.at, from, to)).reduce((a, t) => a + t.amount, 0);
+      const totalOut = dayExpenses + dayPayments;
+
+      out.push({ label: d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" }), totalIn, totalOut, net: totalIn - totalOut, cashIn });
+    }
+    return out;
+  }, [data.sales, data.expenses, data.supplierTx, days]);
+
+  const sumIn = rows.reduce((a, r) => a + r.totalIn, 0);
+  const sumOut = rows.reduce((a, r) => a + r.totalOut, 0);
+  const maxAbs = Math.max(...rows.map((r) => Math.max(r.totalIn, r.totalOut)), 1);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+        {[[7, "Last 7 days"], [14, "Last 14 days"], [30, "Last 30 days"]].map(([d, label]) => (
+          <button key={d} onClick={() => setDays(d)} style={days === d ? { ...btnPrimary, padding: "8px 14px", fontSize: 12.5 } : { ...btnGhost, padding: "8px 14px", fontSize: 12.5 }}>{label}</button>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 18 }}>
+        <StatCard label="Cash in" value={fmt(sumIn)} color={C.ok} />
+        <StatCard label="Cash out (expenses + supplier payments)" value={fmt(sumOut)} color={C.danger} />
+        <StatCard label="Net cash flow" value={fmt(sumIn - sumOut)} color={sumIn - sumOut >= 0 ? C.green : C.danger} emphasis />
+      </div>
+
+      <Card title="Daily cash in vs cash out">
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 160, padding: "10px 4px", overflowX: "auto" }}>
+          {rows.map((r, i) => (
+            <div key={i} style={{ flex: "0 0 auto", minWidth: 34, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 120 }}>
+                <div style={{ width: 12, height: Math.max(3, (r.totalIn / maxAbs) * 120), background: C.green, borderRadius: "3px 3px 0 0" }} title={`In: ${fmt(r.totalIn)}`} />
+                <div style={{ width: 12, height: Math.max(3, (r.totalOut / maxAbs) * 120), background: C.terracotta, borderRadius: "3px 3px 0 0" }} title={`Out: ${fmt(r.totalOut)}`} />
+              </div>
+              <div style={{ fontSize: 10, color: C.muted, whiteSpace: "nowrap" }}>{r.label}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 16, marginTop: 10, fontSize: 11.5, color: C.muted }}>
+          <span><span style={{ display: "inline-block", width: 9, height: 9, background: C.green, borderRadius: 2, marginRight: 5 }} />Cash in</span>
+          <span><span style={{ display: "inline-block", width: 9, height: 9, background: C.terracotta, borderRadius: 2, marginRight: 5 }} />Cash out</span>
+        </div>
+      </Card>
+
+      <div style={{ height: 16 }} />
+
+      <div style={{ background: C.paper, border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden" }}>
+        <Table
+          head={["Date", "Cash in", "Cash out", "Net"]}
+          rows={[...rows].reverse().map((r) => [
+            r.label, fmt(r.totalIn), fmt(r.totalOut),
+            <span style={{ fontWeight: 700, color: r.net >= 0 ? C.ok : C.danger }}>{fmt(r.net)}</span>,
+          ])}
+          emptyText="No activity."
         />
       </div>
     </div>
