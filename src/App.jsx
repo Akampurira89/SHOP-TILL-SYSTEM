@@ -27,6 +27,28 @@ const nowISO = () => new Date().toISOString();
 const niceTime = (iso) => new Date(iso).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 const uid = (p) => p + "_" + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
 
+/* ===================== LICENSE CONSTANTS ===================== */
+const LICENSE_WARNING_DAYS = 3; // show warning banner this many days before paid_until
+const LICENSE_GRACE_DAYS = 2;   // allow continued use this many days after paid_until before locking
+const MONTHLY_FEE_UGX = 35000;
+const SUPPORT_PHONE_PRIMARY = "0781137391"; // TODO: replace with your real MTN MoMo number per deployment
+const SUPPORT_PHONE_SECONDARY = "0743111076"; // TODO: replace with your real Airtel Money number per deployment
+
+function licenseStatus(license) {
+  if (!license || !license.paidUntil) return { state: "unknown" };
+  const now = new Date();
+  const paidUntil = new Date(license.paidUntil);
+  const graceEnd = new Date(paidUntil.getTime() + LICENSE_GRACE_DAYS * 86400000);
+  const warnStart = new Date(paidUntil.getTime() - LICENSE_WARNING_DAYS * 86400000);
+  const daysLeft = Math.ceil((paidUntil - now) / 86400000);
+  const daysOfGraceLeft = Math.ceil((graceEnd - now) / 86400000);
+
+  if (now > graceEnd) return { state: "locked", daysLeft, daysOfGraceLeft: 0 };
+  if (now > paidUntil) return { state: "grace", daysLeft, daysOfGraceLeft };
+  if (now >= warnStart) return { state: "warning", daysLeft, daysOfGraceLeft: LICENSE_GRACE_DAYS };
+  return { state: "ok", daysLeft, daysOfGraceLeft: LICENSE_GRACE_DAYS };
+}
+
 /* ===================== ICONS (inline svg, no deps) ===================== */
 const Icon = ({ d, size = 18, className = "" }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -58,6 +80,8 @@ const ICONS = {
   adjust: "M12 20v-6M12 14l-3 3M12 14l3 3M12 4v6M12 10l-3-3M12 10l3-3M4 12h4M16 12h4",
   inbound: "M21 12V7a2 2 0 00-2-2H5a2 2 0 00-2 2v5m18 0v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5m18 0H3m9-7v7m0 0l-3-3m3 3l3-3",
   barChart: "M3 3v18h18M7 16v-5M12 16V8M17 16v-3",
+  menu: "M3 6h18M3 12h18M3 18h18",
+  close: "M18 6L6 18M6 6l12 12",
 };
 
 /* ===================== ROOT APP ===================== */
@@ -66,6 +90,7 @@ export default function App() {
   const [data, setData] = useState(null);
   const [session, setSession] = useState(null); // {userId, shiftId}
   const [toast, setToast] = useState(null);
+  const [masterUnlocked, setMasterUnlocked] = useState(false); // session-only override after master code review
 
   const [loadError, setLoadError] = useState("");
 
@@ -81,7 +106,7 @@ export default function App() {
         setLoadError("Could not connect to the database. Check your internet connection and try reloading the page.");
         setData({
           users: seedUsers(), products: [], sales: [], suppliers: [], supplierTx: [],
-          expenses: [], shifts: [], auditLog: [], settings: seedSettings(), stockAdj: [],
+          expenses: [], shifts: [], auditLog: [], settings: seedSettings(), stockAdj: [], license: null,
         });
       } finally {
         setLoading(false);
@@ -124,6 +149,18 @@ export default function App() {
     );
   }
 
+  const lic = licenseStatus(data.license);
+  if (lic.state === "locked" && !masterUnlocked) {
+    return (
+      <LockScreen
+        data={data}
+        patch={patch}
+        shopName={data.settings.shopName}
+        onMasterUnlock={() => setMasterUnlocked(true)}
+      />
+    );
+  }
+
   if (!session) {
     return <LoginScreen users={data.users} settings={data.settings} onLogin={(u) => setSession({ userId: u.id, shiftId: null })} note={loadError || undefined} />;
   }
@@ -143,6 +180,7 @@ export default function App() {
       setSession={setSession}
       showToast={showToast}
       toast={toast}
+      lic={lic}
     />
   );
 }
@@ -178,6 +216,29 @@ const fontLink = (
     input, select, textarea { font-family: inherit; }
     .focus-ring:focus-visible { outline: 2px solid ${C.gold}; outline-offset: 2px; }
     @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+    .app-sidebar { transition: transform 0.25s ease; }
+    .app-sidebar-overlay { display: none; }
+    .mobile-menu-btn { display: none; }
+
+    @media (max-width: 860px) {
+      .app-shell { flex-direction: column; }
+      .app-sidebar {
+        position: fixed; top: 0; left: 0; bottom: 0; z-index: 60;
+        width: 78vw; max-width: 280px;
+        transform: translateX(-100%);
+        box-shadow: 0 0 40px rgba(0,0,0,0.3);
+      }
+      .app-sidebar.open { transform: translateX(0); }
+      .app-sidebar-overlay.open {
+        display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 55;
+      }
+      .mobile-menu-btn { display: flex; }
+      .app-main { width: 100%; min-width: 0; }
+      .responsive-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .app-content-pad { padding: 16px 14px 50px !important; }
+      .app-content-pad div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+    }
   `}</style>
 );
 
@@ -218,6 +279,7 @@ function LoginScreen({ users, settings, onLogin, note }) {
       {fontLink}
       <form onSubmit={submit} style={{ background: C.cream, width: 380, maxWidth: "100%", borderRadius: 14, padding: "36px 32px", boxShadow: "0 30px 60px rgba(0,0,0,0.35)", border: `1px solid ${C.line}` }}>
         <div style={{ textAlign: "center", marginBottom: 28 }}>
+          {settings.logoUrl && <img src={settings.logoUrl} alt="" style={{ maxHeight: 56, maxWidth: "100%", objectFit: "contain", marginBottom: 12 }} />}
           <div style={{ fontFamily: F.mono, color: C.gold, fontSize: 12, letterSpacing: 3, marginBottom: 6 }}>TILL SYSTEM</div>
           <h1 style={{ fontFamily: F.display, fontSize: 28, fontWeight: 600, color: C.charcoal, margin: 0 }}>{settings.shopName}</h1>
         </div>
@@ -237,6 +299,179 @@ function LoginScreen({ users, settings, onLogin, note }) {
   );
 }
 
+/* ===================== LICENSE BANNER (warning / grace) ===================== */
+function LicenseBanner({ lic, data, setTab }) {
+  const isGrace = lic.state === "grace";
+  return (
+    <div style={{
+      background: isGrace ? "#FBEAE6" : "#FFF6E0",
+      borderBottom: `1px solid ${isGrace ? C.danger : C.gold}55`,
+      padding: "10px 26px",
+      display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13.5, color: isGrace ? C.danger : "#7A5A12", fontWeight: 600 }}>
+        <Icon d={ICONS.alert} size={16} />
+        {isGrace
+          ? `Your subscription expired. The app will lock in ${Math.max(lic.daysOfGraceLeft, 0)} day(s) unless payment is confirmed.`
+          : `Your subscription renews in ${Math.max(lic.daysLeft, 0)} day(s) — pay ${fmt(MONTHLY_FEE_UGX)} to avoid interruption.`}
+      </div>
+      <button onClick={() => setTab("settings")} style={{ ...btnGhost, padding: "6px 14px", fontSize: 12.5, borderColor: isGrace ? C.danger : C.gold, color: isGrace ? C.danger : "#7A5A12" }}>
+        Go to payment details
+      </button>
+    </div>
+  );
+}
+
+/* ===================== FULL LOCK SCREEN ===================== */
+function LockScreen({ data, patch, shopName, onMasterUnlock }) {
+  const [txId, setTxId] = useState("");
+  const [payerName, setPayerName] = useState("");
+  const [network, setNetwork] = useState("MTN");
+  const [submitted, setSubmitted] = useState(false);
+  const [showMaster, setShowMaster] = useState(false);
+
+  const submitPayment = () => {
+    if (!txId.trim() || !payerName.trim()) return;
+    const entry = { id: uid("ptx"), txId: txId.trim(), payerName: payerName.trim(), network, submittedAt: nowISO(), status: "pending" };
+    patch("license", (l) => ({ ...l, pending: [entry, ...(l.pending || [])] }));
+    setSubmitted(true);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.greenDeep, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F.body, padding: 20 }}>
+      {fontLink}
+      <div style={{ background: C.cream, width: 460, maxWidth: "100%", borderRadius: 14, padding: "34px 32px", boxShadow: "0 30px 60px rgba(0,0,0,0.35)", border: `1px solid ${C.line}` }}>
+        <div style={{ textAlign: "center", marginBottom: 22 }}>
+          <Icon d={ICONS.lock} size={30} className="" />
+          <h1 style={{ fontFamily: F.display, fontSize: 22, fontWeight: 600, color: C.charcoal, margin: "12px 0 4px" }}>{shopName} is locked</h1>
+          <p style={{ color: C.muted, fontSize: 13.5, margin: 0 }}>The monthly subscription ({fmt(MONTHLY_FEE_UGX)}) is overdue. Pay below to keep using the till.</p>
+        </div>
+
+        {!submitted ? (
+          <>
+            <Card title="Pay using mobile money">
+              <Row left="MTN MoMo" right={SUPPORT_PHONE_PRIMARY} bold />
+              <Row left="Airtel Money" right={SUPPORT_PHONE_SECONDARY} bold />
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>Send {fmt(MONTHLY_FEE_UGX)} to either number, then enter the confirmation details below.</div>
+            </Card>
+
+            <div style={{ height: 14 }} />
+
+            <label style={lbl}>Network used</label>
+            <select className="focus-ring" value={network} onChange={(e) => setNetwork(e.target.value)} style={inp}>
+              <option value="MTN">MTN MoMo</option>
+              <option value="Airtel">Airtel Money</option>
+            </select>
+            <label style={lbl}>Your name (as sender)</label>
+            <input className="focus-ring" value={payerName} onChange={(e) => setPayerName(e.target.value)} style={inp} placeholder="Name on the mobile money account" />
+            <label style={lbl}>Transaction ID / confirmation code</label>
+            <input className="focus-ring" value={txId} onChange={(e) => setTxId(e.target.value)} style={{ ...inp, fontFamily: F.mono }} placeholder="e.g. from the SMS confirmation" />
+
+            <button onClick={submitPayment} disabled={!txId.trim() || !payerName.trim()} style={{ ...btnPrimary, width: "100%", marginTop: 16, padding: "13px 0", fontSize: 15, opacity: !txId.trim() || !payerName.trim() ? 0.5 : 1 }}>
+              Submit for verification
+            </button>
+          </>
+        ) : (
+          <div style={{ textAlign: "center", padding: "20px 0" }}>
+            <div style={{ color: C.ok, fontWeight: 700, fontSize: 15, marginBottom: 8 }}>Submitted — awaiting confirmation</div>
+            <p style={{ color: C.muted, fontSize: 13.5 }}>Your transaction ID has been recorded. The system will unlock once it's verified. This is usually quick — check back shortly.</p>
+          </div>
+        )}
+
+        <div style={{ textAlign: "center", marginTop: 22 }}>
+          <button onClick={() => setShowMaster(true)} style={{ background: "none", border: "none", color: C.muted, fontSize: 11.5, textDecoration: "underline" }}>
+            Owner / support access
+          </button>
+        </div>
+      </div>
+
+      {showMaster && <MasterUnlockModal data={data} patch={patch} onClose={() => setShowMaster(false)} onUnlock={onMasterUnlock} />}
+    </div>
+  );
+}
+
+/* ===================== MASTER UNLOCK / APPROVAL PANEL ===================== */
+function MasterUnlockModal({ data, patch, onClose, onUnlock }) {
+  const [code, setCode] = useState("");
+  const [verified, setVerified] = useState(false);
+  const [err, setErr] = useState("");
+  const [extendDays, setExtendDays] = useState(30);
+
+  const checkCode = () => {
+    if (!data.license || code.trim() !== String(data.license.masterCode || "").trim()) {
+      setErr("Incorrect master code.");
+      return;
+    }
+    setErr("");
+    setVerified(true);
+  };
+
+  const approve = (entry) => {
+    const newPaidUntil = new Date(Date.now() + extendDays * 86400000).toISOString();
+    patch("license", (l) => ({
+      ...l,
+      paidUntil: newPaidUntil,
+      pending: (l.pending || []).filter((p) => p.id !== entry.id),
+      history: [{ ...entry, status: "approved", approvedAt: nowISO(), extendedDays: extendDays }, ...(l.history || [])].slice(0, 200),
+    }));
+    onUnlock();
+  };
+  const reject = (entry) => {
+    patch("license", (l) => ({
+      ...l,
+      pending: (l.pending || []).filter((p) => p.id !== entry.id),
+      history: [{ ...entry, status: "rejected", rejectedAt: nowISO() }, ...(l.history || [])].slice(0, 200),
+    }));
+  };
+  const extendDirectly = () => {
+    const newPaidUntil = new Date(Date.now() + extendDays * 86400000).toISOString();
+    patch("license", (l) => ({ ...l, paidUntil: newPaidUntil, history: [{ id: uid("ptx"), status: "manual_extend", extendedDays: extendDays, at: nowISO() }, ...(l.history || [])].slice(0, 200) }));
+    onUnlock();
+  };
+
+  return (
+    <Modal title="Owner access" onClose={onClose} wide={verified}>
+      {!verified ? (
+        <div>
+          <p style={{ color: C.muted, fontSize: 13.5, marginTop: 0 }}>Enter the master code to review payments and unlock the system.</p>
+          {err && <div style={{ background: "#FBEAE6", color: C.danger, padding: "9px 13px", borderRadius: 8, fontSize: 13, marginBottom: 10 }}>{err}</div>}
+          <input className="focus-ring" type="password" value={code} onChange={(e) => setCode(e.target.value)} style={inp} placeholder="Master code" autoFocus />
+          <button onClick={checkCode} style={{ ...btnPrimary, width: "100%", marginTop: 14 }}>Verify</button>
+        </div>
+      ) : (
+        <div>
+          <Card title="Pending payment submissions">
+            {(data.license.pending || []).length === 0 ? (
+              <Empty text="No pending submissions right now." good />
+            ) : (
+              data.license.pending.map((p) => (
+                <div key={p.id} style={{ border: `1px solid ${C.line}`, borderRadius: 10, padding: 12, marginBottom: 10 }}>
+                  <Row left="Sender" right={p.payerName} />
+                  <Row left="Network" right={p.network} />
+                  <Row left="Transaction ID" right={p.txId} bold />
+                  <Row left="Submitted" right={niceTime(p.submittedAt)} />
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button onClick={() => approve(p)} style={{ ...btnPrimary, flex: 1, padding: "8px 0", fontSize: 13 }}>Approve & extend</button>
+                    <button onClick={() => reject(p)} style={{ ...btnDanger, flex: 1, padding: "8px 0", fontSize: 13 }}>Reject</button>
+                  </div>
+                </div>
+              ))
+            )}
+          </Card>
+
+          <div style={{ height: 14 }} />
+
+          <Card title="Manual extension (no submission needed)">
+            <label style={lbl}>Extend by (days)</label>
+            <input className="focus-ring" value={extendDays} onChange={(e) => setExtendDays(Number(e.target.value) || 30)} style={{ ...inp, fontFamily: F.mono, width: 120 }} inputMode="numeric" />
+            <button onClick={extendDirectly} style={{ ...btnPrimary, marginTop: 10 }}>Extend & unlock now</button>
+          </Card>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 const lbl = { display: "block", fontSize: 12.5, fontWeight: 600, color: C.charcoal, marginBottom: 6, marginTop: 14, letterSpacing: 0.2 };
 const inp = { width: "100%", padding: "11px 13px", borderRadius: 8, border: `1.5px solid ${C.line}`, background: C.paper, fontSize: 14.5, color: C.charcoal };
 const btnPrimary = { background: C.green, color: C.cream, border: "none", borderRadius: 8, fontWeight: 600, fontSize: 14, padding: "10px 18px" };
@@ -244,10 +479,11 @@ const btnGhost = { background: "transparent", color: C.green, border: `1.5px sol
 const btnDanger = { background: C.danger, color: "#fff", border: "none", borderRadius: 8, fontWeight: 600, fontSize: 14, padding: "10px 18px" };
 
 /* ===================== MAIN APP SHELL ===================== */
-function MainApp({ data, patch, addAudit, me, session, setSession, showToast, toast }) {
+function MainApp({ data, patch, addAudit, me, session, setSession, showToast, toast, lic }) {
   const isAdmin = me.role === "admin";
   const activeShift = data.shifts.find((s) => s.userId === me.id && !s.closedAt);
   const [tab, setTab] = useState(activeShift || isAdmin ? "sell" : "openShift");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const ADMIN_TABS = [
     { id: "dashboard", label: "Dashboard", icon: ICONS.dashboard },
@@ -270,13 +506,22 @@ function MainApp({ data, patch, addAudit, me, session, setSession, showToast, to
 
   const needsShift = !isAdmin && !activeShift;
 
+  const handleSetTab = (t) => {
+    setTab(t);
+    setMobileMenuOpen(false);
+  };
+
   return (
-    <div style={{ minHeight: "100vh", background: C.cream, fontFamily: F.body, display: "flex" }}>
+    <div className="app-shell" style={{ minHeight: "100vh", background: C.cream, fontFamily: F.body, display: "flex" }}>
       {fontLink}
-      <Sidebar tabs={tabs} tab={tab} setTab={setTab} me={me} setSession={setSession} shopName={data.settings.shopName} disabled={needsShift} />
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-        <TopBar me={me} activeShift={activeShift} settings={data.settings} />
-        <div style={{ flex: 1, overflow: "auto", padding: "22px 26px 60px" }}>
+      <div className={`app-sidebar-overlay ${mobileMenuOpen ? "open" : ""}`} onClick={() => setMobileMenuOpen(false)} />
+      <Sidebar tabs={tabs} tab={tab} setTab={handleSetTab} me={me} setSession={setSession} shopName={data.settings.shopName} logoUrl={data.settings.logoUrl} disabled={needsShift} mobileMenuOpen={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
+      <div className="app-main" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+        <TopBar me={me} activeShift={activeShift} settings={data.settings} onMenuClick={() => setMobileMenuOpen(true)} />
+        {isAdmin && (lic.state === "warning" || lic.state === "grace") && (
+          <LicenseBanner lic={lic} data={data} setTab={handleSetTab} />
+        )}
+        <div className="app-content-pad" style={{ flex: 1, overflow: "auto", padding: "22px 26px 60px" }}>
           {needsShift ? (
             <OpenShiftScreen me={me} patch={patch} addAudit={addAudit} showToast={showToast} />
           ) : (
@@ -310,12 +555,18 @@ function Toast({ toast }) {
   );
 }
 
-function Sidebar({ tabs, tab, setTab, me, setSession, shopName, disabled }) {
+function Sidebar({ tabs, tab, setTab, me, setSession, shopName, logoUrl, disabled, mobileMenuOpen, onClose }) {
   return (
-    <div style={{ width: 220, background: C.greenDeep, color: C.cream, display: "flex", flexDirection: "column", flexShrink: 0 }}>
-      <div style={{ padding: "22px 20px 18px", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-        <div style={{ fontFamily: F.mono, fontSize: 10.5, letterSpacing: 2.5, color: C.gold, marginBottom: 4 }}>TILL SYSTEM</div>
-        <div style={{ fontFamily: F.display, fontSize: 18, fontWeight: 600, lineHeight: 1.25 }}>{shopName}</div>
+    <div className={`app-sidebar ${mobileMenuOpen ? "open" : ""}`} style={{ width: 220, background: C.greenDeep, color: C.cream, display: "flex", flexDirection: "column", flexShrink: 0 }}>
+      <div style={{ padding: "22px 20px 18px", borderBottom: "1px solid rgba(255,255,255,0.1)", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+        <div style={{ minWidth: 0 }}>
+          {logoUrl && <img src={logoUrl} alt="" style={{ maxHeight: 40, maxWidth: "100%", objectFit: "contain", marginBottom: 10, display: "block" }} />}
+          <div style={{ fontFamily: F.mono, fontSize: 10.5, letterSpacing: 2.5, color: C.gold, marginBottom: 4 }}>TILL SYSTEM</div>
+          <div style={{ fontFamily: F.display, fontSize: 18, fontWeight: 600, lineHeight: 1.25 }}>{shopName}</div>
+        </div>
+        <button onClick={onClose} className="mobile-menu-btn focus-ring" style={{ background: "none", border: "none", color: C.cream, padding: 4, flexShrink: 0 }}>
+          <Icon d={ICONS.close} size={20} />
+        </button>
       </div>
       <div style={{ flex: 1, padding: "14px 10px", display: "flex", flexDirection: "column", gap: 3, overflow: "auto" }}>
         {tabs.map((t) => (
@@ -348,12 +599,17 @@ function Sidebar({ tabs, tab, setTab, me, setSession, shopName, disabled }) {
   );
 }
 
-function TopBar({ me, activeShift, settings }) {
+function TopBar({ me, activeShift, settings, onMenuClick }) {
   return (
-    <div style={{ height: 56, background: C.paper, borderBottom: `1px solid ${C.line}`, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 24px", flexShrink: 0 }}>
-      <div style={{ fontSize: 13, color: C.muted }}>{new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
+    <div style={{ height: 56, background: C.paper, borderBottom: `1px solid ${C.line}`, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 24px", flexShrink: 0, gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+        <button onClick={onMenuClick} className="mobile-menu-btn focus-ring" style={{ background: "none", border: "none", color: C.charcoal, padding: 4, flexShrink: 0, alignItems: "center" }}>
+          <Icon d={ICONS.menu} size={20} />
+        </button>
+        <div style={{ fontSize: 13, color: C.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
+      </div>
       {activeShift && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.ok, fontWeight: 600 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.ok, fontWeight: 600, flexShrink: 0 }}>
           <span style={{ width: 7, height: 7, borderRadius: 99, background: C.ok, display: "inline-block" }} />
           Till open · started {fmt(activeShift.openingCash)}
         </div>
@@ -1063,6 +1319,7 @@ function ReceiptModal({ sale, settings, onClose }) {
   return (
     <Modal onClose={onClose} title="Sale complete">
       <div ref={printRef} style={{ fontFamily: F.mono, fontSize: 13, background: "#fff", border: `1px dashed ${C.line}`, borderRadius: 4, padding: 16 }}>
+        {settings.logoUrl && <div className="c" style={{ textAlign: "center", marginBottom: 6 }}><img src={settings.logoUrl} alt="" style={{ maxHeight: 44, maxWidth: "70%", objectFit: "contain" }} /></div>}
         <h2 className="c">{settings.shopName}</h2>
         <div className="c" style={{ fontSize: 11, color: C.muted }}>{niceTime(sale.at)}</div>
         <div className="c" style={{ fontSize: 11, color: C.muted }}>Receipt {sale.receiptNo} · Served by {sale.cashierName}</div>
@@ -2063,16 +2320,27 @@ function SettingsScreen({ data, patch, showToast, me }) {
   const [shopName, setShopName] = useState(data.settings.shopName);
   const [threshold, setThreshold] = useState(data.settings.lowStockThreshold);
   const [momoLines, setMomoLines] = useState(data.settings.momoLines);
+  const [logoUrl, setLogoUrl] = useState(data.settings.logoUrl || "");
   const [curPass, setCurPass] = useState("");
   const [newPass, setNewPass] = useState("");
   const [confirmPass, setConfirmPass] = useState("");
   const [passErr, setPassErr] = useState("");
+  const fileInputRef = useRef(null);
 
   const save = () => {
-    patch("settings", { ...data.settings, shopName, lowStockThreshold: Number(threshold) || 5, momoLines });
+    patch("settings", { ...data.settings, shopName, lowStockThreshold: Number(threshold) || 5, momoLines, logoUrl });
     showToast("Settings saved.");
   };
   const updateLine = (id, field, val) => setMomoLines((lines) => lines.map((l) => (l.id === id ? { ...l, [field]: val } : l)));
+
+  const handleLogoFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (file.size > 1024 * 1024) { showToast("Please use an image under 1MB.", "error"); return; }
+    const reader = new FileReader();
+    reader.onload = () => setLogoUrl(reader.result);
+    reader.readAsDataURL(file);
+  };
 
   const changePassword = () => {
     setPassErr("");
@@ -2084,12 +2352,44 @@ function SettingsScreen({ data, patch, showToast, me }) {
     showToast("Password changed.");
   };
 
+  const lic = licenseStatus(data.license);
+
   return (
     <div style={{ maxWidth: 560 }}>
       <SectionHeader title="Settings" />
-      <Card title="Shop details">
+
+      {data.license && (
+        <>
+          <Card title="Subscription" accent={lic.state === "ok" ? C.ok : lic.state === "warning" ? C.gold : C.danger}>
+            <Row left="Status" right={lic.state === "ok" ? "Active" : lic.state === "warning" ? "Renewing soon" : lic.state === "grace" ? "Overdue (grace period)" : "Locked"} bold />
+            <Row left="Paid until" right={niceTime(data.license.paidUntil)} />
+            <Row left="Monthly fee" right={fmt(MONTHLY_FEE_UGX)} />
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>To renew, pay via the mobile money numbers below and contact support with your transaction ID, or wait for the lock screen which lets you submit it directly.</div>
+          </Card>
+          <div style={{ height: 14 }} />
+        </>
+      )}
+
+      <Card title="Branding">
         <label style={lbl}>Shop name</label>
         <input className="focus-ring" value={shopName} onChange={(e) => setShopName(e.target.value)} style={inp} />
+        <label style={lbl}>Logo</label>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 4 }}>
+          {logoUrl ? (
+            <img src={logoUrl} alt="" style={{ height: 48, maxWidth: 140, objectFit: "contain", border: `1px solid ${C.line}`, borderRadius: 8, padding: 4, background: C.paper }} />
+          ) : (
+            <div style={{ height: 48, width: 80, border: `1px dashed ${C.line}`, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: C.muted }}>No logo</div>
+          )}
+          <button onClick={() => fileInputRef.current?.click()} style={{ ...btnGhost, padding: "8px 14px", fontSize: 12.5 }}>Upload image</button>
+          {logoUrl && <button onClick={() => setLogoUrl("")} style={{ background: "none", border: "none", color: C.danger, fontSize: 12.5, textDecoration: "underline" }}>Remove</button>}
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={handleLogoFile} style={{ display: "none" }} />
+        </div>
+        <div style={{ fontSize: 11.5, color: C.muted, marginTop: 8 }}>Shown on the login screen, sidebar, and (soon) printed receipts. Keep it under 1MB.</div>
+      </Card>
+
+      <div style={{ height: 14 }} />
+
+      <Card title="Other shop details">
         <label style={lbl}>Low stock alert threshold</label>
         <input className="focus-ring" value={threshold} onChange={(e) => setThreshold(e.target.value)} style={{ ...inp, fontFamily: F.mono, width: 120 }} inputMode="numeric" />
         <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>You'll be alerted on the dashboard when stock falls to or below this number.</div>
@@ -2142,21 +2442,23 @@ function Modal({ children, onClose, title, wide }) {
 }
 function Table({ head, rows, emptyText }) {
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
-      <thead>
-        <tr style={{ background: C.cream }}>
-          {head.map((h, i) => <th key={i} style={{ textAlign: "left", padding: "11px 16px", fontSize: 11.5, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.4, borderBottom: `1px solid ${C.line}` }}>{h}</th>)}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.length === 0 && <tr><td colSpan={head.length} style={{ padding: "30px 16px", textAlign: "center", color: C.muted, fontStyle: "italic" }}>{emptyText}</td></tr>}
-        {rows.map((r, i) => (
-          <tr key={i} style={{ borderBottom: `1px solid ${C.line}` }}>
-            {r.map((c, j) => <td key={j} style={{ padding: "11px 16px", verticalAlign: "middle" }}>{c}</td>)}
+    <div className="responsive-table-wrap">
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5, minWidth: 560 }}>
+        <thead>
+          <tr style={{ background: C.cream }}>
+            {head.map((h, i) => <th key={i} style={{ textAlign: "left", padding: "11px 16px", fontSize: 11.5, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: 0.4, borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap" }}>{h}</th>)}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.length === 0 && <tr><td colSpan={head.length} style={{ padding: "30px 16px", textAlign: "center", color: C.muted, fontStyle: "italic" }}>{emptyText}</td></tr>}
+          {rows.map((r, i) => (
+            <tr key={i} style={{ borderBottom: `1px solid ${C.line}` }}>
+              {r.map((c, j) => <td key={j} style={{ padding: "11px 16px", verticalAlign: "middle" }}>{c}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 function Badge({ children, color }) {
